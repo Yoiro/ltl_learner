@@ -1,26 +1,26 @@
 import json
-import os
+from copy import deepcopy
+from pathlib import Path
 
-from dag.builder import DAGBuilder
-from ltl.converter import LTLConverter
-from traces import Traces
+from ltl_learner.dag.builder import DAGBuilder
+from ltl_learner.ltl.converter import LTLConverter
+from ltl_learner.traces import Sample
 
 
 class Learner:
-    def __init__(self, k: int = 10, sample: os.Pathlike = None, max_words: int = 10):
-        # k = args.cutoff, sample = args.input_file, max_words = args.num_words
+    def __init__(self, k: int = 10, sample: Path = None, max_words: int = 10):
         self.cutoff = k
-        self.builder = DAGBuilder()
-        self.converter = LTLConverter()
         self.variables, self.positive, self.negative = self.read_sample(sample)
+        self.builder = DAGBuilder(deepcopy(self.variables))
+        self.converter = LTLConverter()
 
     def read_sample(self, sample):
         with open(sample, 'r') as f:
             spec = json.load(f)
         return (
             spec['variables'],
-            Traces(spec['positives']),
-            Traces(spec['negatives'])
+            Sample(spec['positives']),
+            Sample(spec['negatives'])
         )
 
     def main(self):
@@ -29,6 +29,7 @@ class Learner:
         while not satisfied:
             n += 1
             phi = self.builder.build(n)
+            return phi
             if phi.sat or n > self.cutoff:
                 break
         if phi.sat:

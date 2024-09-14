@@ -1,7 +1,15 @@
 import argparse
 from pathlib import Path
 
-from learner import Learner
+from ltl_learner.learner import Learner
+
+
+def positive_integer(n: int):
+    return max([n, 0])
+
+def strictly_positive_integer(n: int):
+    return max([n, 1])
+
 
 parser = argparse.ArgumentParser(
     prog = 'ltl_learner',
@@ -21,13 +29,20 @@ parser.add_argument('-f', '--input_file',
 parser.add_argument('-k', '--cutoff',
     action='store',
     default=10,
-    help='The cutoff value for the computed DAG encoding the LTL formula.',
-    type=int
+    help='''
+    The cutoff value for the computed DAG encoding the LTL formula.
+    If any value below or equal to 0 is given, defaults to 1.
+    ''',
+    type=strictly_positive_integer
 )
 parser.add_argument('-n', '--num_words',
     action='store',
     default=10,
-    help='The maximum number of words to take into account (since traces are infinite over AP).'
+    help='''
+    The maximum number of words to take into account (since traces are infinite over AP).
+    If any value below or equal to 0 is given, defaults to 1.
+    ''',
+    type=strictly_positive_integer
 )
 args = parser.parse_args()
 result = Learner(k = args.cutoff, sample = args.input_file, max_words = args.num_words).main()
