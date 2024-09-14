@@ -1,7 +1,9 @@
+import json
 import os
 
 from dag.builder import DAGBuilder
 from ltl.converter import LTLConverter
+from traces import Traces
 
 
 class Learner:
@@ -10,7 +12,16 @@ class Learner:
         self.cutoff = k
         self.builder = DAGBuilder()
         self.converter = LTLConverter()
+        self.variables, self.positive, self.negative = self.read_sample(sample)
 
+    def read_sample(self, sample):
+        with open(sample, 'r') as f:
+            spec = json.load(f)
+        return (
+            spec['variables'],
+            Traces(spec['positives']),
+            Traces(spec['negatives'])
+        )
 
     def main(self):
         n = 0
