@@ -5,9 +5,11 @@ from ltl_learner.learner import Learner
 
 
 def positive_integer(n: int):
+    n = int(n)
     return max([n, 0])
 
 def strictly_positive_integer(n: int):
+    n = int(n)
     return max([n, 1])
 
 
@@ -44,6 +46,20 @@ parser.add_argument('-n', '--num_words',
     ''',
     type=strictly_positive_integer
 )
+parser.add_argument('-o', '--operators',
+    action='store',
+    help='''
+    A path to a (JSON) file specifying the operators to use. 
+    This allows one to use only subsets of LTL should you desire it.
+    ''',
+    type=Path,
+    required=False
+)
 args = parser.parse_args()
-result = Learner(k = args.cutoff, sample = args.input_file, max_words = args.num_words).main()
+result = Learner(
+    k=args.cutoff,
+    sample=args.input_file,
+    max_words=args.num_words,
+    operators_file=args.operators
+).main()
 print(result)
