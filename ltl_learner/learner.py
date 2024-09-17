@@ -13,15 +13,14 @@ from ltl_learner.traces import Sample
 
 
 class Learner:
-    def __init__(self, k: int = 10, sample: Path = None, max_words: int = 10, operators_file = None):
+    def __init__(self, k: int = 10, sample: Path = None, max_words: int = 10, syntax = None):
         self.root_folder = Path(Path(__file__) / '..').resolve()
         self.file_name = f'run_{datetime.now().strftime("%Y%m%d_%H%M%S")}.smtlib2'
         self.cutoff = k
         self.variables, self.positive, self.negative = self.read_sample(sample)
         ops = {"operators": []}
-        if operators_file:
-            with open(operators, 'r') as f:
-                ops = json.load(f)
+        if syntax:
+            ops['operators'] = syntax
         self.builder = DAGBuilder(deepcopy(self.variables), ops=ops["operators"])
         self.converter = LTLConverter()
         self.output_file = str(Path(self.root_folder / 'results' / self.file_name))

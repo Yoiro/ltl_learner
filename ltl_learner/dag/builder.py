@@ -1,5 +1,3 @@
-from itertools import zip_longest
-
 from z3 import Bool, And, Or, Not
 
 from ltl_learner.constants import operators
@@ -19,7 +17,7 @@ class DAGBuilder:
         self.vars = {}
         if not ops:
             ops = []
-        self.operators = [o for o in operators if o not in ops]
+        self.operators = [o for o in ops if o in operators]
         self.symbols = set(self.variables).union(set(self.operators))
 
     def generate_vars(self, length):
