@@ -1,0 +1,62 @@
+{
+    "variables": ["requestReceived", "lockAcquired", "numbersGenerated", "confirmationReceived"],
+    "positives": [
+        {
+            "traces": [
+                ["requestReceived"],
+                ["requestReceived", "lockAcquired"],
+                ["lockAcquired", "numbersGenerated"],
+                ["numbersGenerated", "confirmationReceived"]
+            ],
+            "repeat": 0
+        },
+        {
+            "traces": [
+                ["requestReceived"],
+                ["requestReceived", "lockAcquired"],
+                ["lockAcquired", "numbersGenerated"],
+                ["lockAcquired", "numbersGenerated"],
+                ["lockAcquired", "numbersGenerated"],
+                ["numbersGenerated", "confirmationReceived"],
+                ["requestReceived"],
+                ["requestReceived", "lockAcquired"]
+            ],
+            "repeat": 4
+        },
+        {
+            "traces": [
+                ["requestReceived"],
+                ["requestReceived", "lockAcquired"],
+                ["lockAcquired", "numbersGenerated"]
+            ]
+        }
+    ],
+    "negatives": [
+        {
+            "traces": [
+                ["requestReceived"],
+                ["requestReceived", "lockAcquired"],
+                ["lockAcquired", "numbersGenerated"],
+                ["requestReceived"]
+            ],
+            "repeat": 3
+        },
+        {
+            "traces": [
+                ["requestReceived"],
+                ["requestReceived", "lockAcquired"],
+                ["lockAcquired", "numbersGenerated"]
+            ],
+            "repeat": 1
+        },
+        {
+            "traces": [
+                ["requestReceived"],
+                ["requestReceived", "lockAcquired"],
+                ["lockAcquired", "numbersGenerated"],
+                ["lockAcquired", "numbersGenerated", "requestReceived"]
+            ],
+            "repeat": 2
+        }
+    ]
+}
