@@ -3,10 +3,8 @@ import os
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
-from z3 import Solver, And
-from z3.z3types import Z3Exception
+from z3 import Solver
 
 from ltl_learner.constants import operators
 from ltl_learner.dag.builder import DAGBuilder
@@ -55,13 +53,9 @@ class Learner:
         n = 0
         while True:
             n += 1
-            # phi_DAG_n = self.builder.build(n)
-            # phi_P_n = self.builder.add_consistency_with(phi_DAG_n, self.positive)
-            # phi_S_n = self.builder.add_consistency_with(phi_P_n, self.negative, positive = False)
             self.builder.build(n)
             self.builder.add_consistency_with(self.positive)
             self.builder.add_consistency_with(self.negative, positive = False)
-            # if self.is_sat(phi_S_n) or n > self.cutoff:
             if self.is_sat() or n > self.cutoff:
                 break
             self.solver.reset()
