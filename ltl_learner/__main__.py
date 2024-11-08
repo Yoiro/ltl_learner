@@ -1,4 +1,5 @@
 import argparse
+import time
 from pathlib import Path
 
 from ltl_learner.learner import Learner
@@ -32,17 +33,8 @@ parser.add_argument('-k', '--cutoff',
     action='store',
     default=10,
     help='''
-    The cutoff value for the computed DAG encoding the LTL formula.
-    If any value below or equal to 0 is given, defaults to 1.
-    ''',
-    type=strictly_positive_integer
-)
-parser.add_argument('-n', '--num_words',
-    action='store',
-    default=10,
-    help='''
-    The maximum number of words to take into account (since traces are infinite over AP).
-    If any value below or equal to 0 is given, defaults to 1.
+    The cutoff value for the number of variables of the computed DAG encoding the LTL formula.
+    If any value below or equal to 0 is given, defaults to 1. If not specified, defaults to 10.
     ''',
     type=strictly_positive_integer
 )
@@ -52,14 +44,17 @@ parser.add_argument('-o', '--operators',
     A path to a (JSON) file specifying the operators to use. 
     This allows one to use only subsets of LTL should you desire it.
     ''',
-    type=Path,
+    type=list,
+    nargs='+',
     required=False
 )
 args = parser.parse_args()
+start = time.time()
 result = Learner(
     k=args.cutoff,
     sample=args.input_file,
-    max_words=args.num_words,
-    operators_file=args.operators
+    syntax=args.operators
 ).main()
-print(result)
+end = time.time()
+
+print(f"It took {end - start} seconds to give this answer.")

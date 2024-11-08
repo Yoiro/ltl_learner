@@ -3,7 +3,7 @@
     "positives": [
         {
             "traces": [
-                ["noncrit1", "noncrit2"],
+                ["noncrit1", "noncrit2"], 
                 ["wait1", "noncrit2"],
                 ["crit1", "noncrit2"]
             ],

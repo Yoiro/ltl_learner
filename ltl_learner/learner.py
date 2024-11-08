@@ -3,8 +3,10 @@ import os
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
-from z3 import Solver
+from z3 import Solver, And
+from z3.z3types import Z3Exception
 
 from ltl_learner.constants import operators
 from ltl_learner.dag.builder import DAGBuilder
@@ -13,25 +15,18 @@ from ltl_learner.traces import Sample
 
 
 class Learner:
-    def __init__(self, k: int = 10, sample: Path = None, max_words: int = 10, syntax = None):
+    def __init__(self, k: int = 10, sample: Path = None, syntax = None):
         self.root_folder = Path(Path(__file__) / '..').resolve()
         self.file_name = f'run_{datetime.now().strftime("%Y%m%d_%H%M%S")}.smtlib2'
         self.cutoff = k
         self.variables, self.positive, self.negative = self.read_sample(sample)
-        ops = {"operators": []}
+        ops = {}
         if syntax:
-            ops['operators'] = syntax
-        self.builder = DAGBuilder(deepcopy(self.variables), ops=ops["operators"])
-        self.converter = LTLConverter()
-        self.output_file = str(Path(self.root_folder / 'results' / self.file_name))
-        if not os.path.exists(self.output_file):
-            with open(self.output_file, 'w') as f:
-                f.write(f';; Run {self.file_name}\n')
-                f.write(f';; Parameters\n')
-                f.write(f';;    cutoff: {self.cutoff}\n')
-                f.write(f';;    variables: {", ".join(self.variables)}\n')
-                f.write(f';;    operators: {", ".join(operators)}\n')
+            ops = syntax
         self.solver = Solver()
+        self.builder = DAGBuilder(solver=self.solver, variables=deepcopy(self.variables), ops=ops)
+        self.converter = LTLConverter(self.solver)
+        self.output_file = str(Path(self.root_folder / 'results' / self.file_name))
         self.sat = None
 
     def read_sample(self, sample):
@@ -42,30 +37,38 @@ class Learner:
             Sample(spec['positives']),
             Sample(spec['negatives'])
         )
-
-    def is_sat(self, phi, push = True):
-        if push:
-            self.solver.push()
-            self.solver.add(phi)
-            self.sat = self.solver.check()
-        return self.sat
+    
+    def is_sat(self):
+        self.solver.check()
+        return self.solver.model()
 
     def write_model(self):
-        with open(self.output_file, 'a') as f:
+        with open(self.output_file, 'w') as f:
+            f.write(f';; Run {self.file_name}\n')
+            f.write(f';; Parameters\n')
+            f.write(f';;    cutoff: {self.cutoff}\n')
+            f.write(f';;    variables: {", ".join(self.variables)}\n')
+            f.write(f';;    operators: {", ".join(operators["all"])}\n')
             f.write(self.solver.sexpr())
 
     def main(self):
         n = 0
-        satisfied = False
-        while not satisfied:
+        while True:
             n += 1
-            phi = self.builder.build(n)
-            if self.is_sat(phi) or n > self.cutoff:
+            # phi_DAG_n = self.builder.build(n)
+            # phi_P_n = self.builder.add_consistency_with(phi_DAG_n, self.positive)
+            # phi_S_n = self.builder.add_consistency_with(phi_P_n, self.negative, positive = False)
+            self.builder.build(n)
+            self.builder.add_consistency_with(self.positive)
+            self.builder.add_consistency_with(self.negative, positive = False)
+            # if self.is_sat(phi_S_n) or n > self.cutoff:
+            if self.is_sat() or n > self.cutoff:
                 break
-        if self.is_sat(phi, push = False):
-            print("Found a valid truth assignation. Registering it in results.")
+            self.solver.reset()
+        if n <= self.cutoff:
+            print("Found a valid truth assignation. Registering in results.")
             self.write_model()
-            return self.converter.build(phi.model)
+            return self.converter.build()
         else:
             print("Unable to determine a formula within the given constraint.")
-            return phi
+            return self.solver
