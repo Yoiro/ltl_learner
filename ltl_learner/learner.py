@@ -1,5 +1,5 @@
 import json
-import os
+import logging
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +10,8 @@ from ltl_learner.constants import operators
 from ltl_learner.dag.builder import DAGBuilder
 from ltl_learner.ltl.converter import LTLConverter
 from ltl_learner.traces import Sample
+
+logger = logging.getLogger(__name__)
 
 
 class Learner:
@@ -41,6 +43,8 @@ class Learner:
         return self.solver.model()
 
     def write_model(self):
+        logger.info('Writing z3 model expression tree.')
+        logger.info(f'  Using file {self.output_file}')
         with open(self.output_file, 'w') as f:
             f.write(f';; Run {self.file_name}\n')
             f.write(f';; Parameters\n')
@@ -50,17 +54,22 @@ class Learner:
             f.write(self.solver.sexpr())
 
     def main(self):
-        n = 0
+        logger.info('Starting to compute an LTL formula.')
+        n = 1
+        logger.info(f'Computing DAG of length {n}')
+        self.builder.build(n, self.positive, self.negative)
         while True:
-            n += 1
             if self.is_sat() or n > self.cutoff:
                 break
             self.solver.reset()
+            n += 1
+            logger.info(f"Computing DAG of length {n}")
             self.builder.build(n, self.positive, self.negative)
         if n <= self.cutoff:
-            print("Found a valid truth assignation. Registering in results.")
+            logger.info("Found a valid truth assignation.")
             self.write_model()
-            return self.converter.build()
+            logger.info('Now computing the matching LTL formula.')
+            return self.converter.build(length = n)
         else:
-            print("Unable to determine a formula within the given constraint.")
+            logger.info("Unable to determine a formula within the given constraint.")
             return self.solver

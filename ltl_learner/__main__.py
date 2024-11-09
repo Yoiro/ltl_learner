@@ -1,8 +1,16 @@
 import argparse
+import logging
+import sys
 import time
 from pathlib import Path
 
 from ltl_learner.learner import Learner
+
+root = logging.getLogger()
+root.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+handler.setLevel(logging.INFO)
+root.addHandler(handler)
 
 
 def positive_integer(n: int):
