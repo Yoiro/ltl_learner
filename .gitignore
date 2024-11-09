@@ -10,3 +10,4 @@ __pycache__
 *.smtlib2
 
 *.trace
+dataset/raw/*
