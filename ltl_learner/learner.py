@@ -53,12 +53,10 @@ class Learner:
         n = 0
         while True:
             n += 1
-            self.builder.build(n)
-            self.builder.add_consistency_with(self.positive)
-            self.builder.add_consistency_with(self.negative, positive = False)
             if self.is_sat() or n > self.cutoff:
                 break
             self.solver.reset()
+            self.builder.build(n, self.positive, self.negative)
         if n <= self.cutoff:
             print("Found a valid truth assignation. Registering in results.")
             self.write_model()
