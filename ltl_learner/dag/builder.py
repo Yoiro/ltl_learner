@@ -1,6 +1,6 @@
 from typing import Any, Union
 
-from z3 import Bool, And, Or, Not, Implies
+from z3 import Bool, And, Or, Not, Implies, AtMost, AtLeast, Solver
 
 from ltl_learner.constants import operators
 from ltl_learner.traces import Sample, Trace
@@ -18,7 +18,6 @@ class DAGBuilder:
         self.node_1 = None
         self.left_children = None
         self.right_children = None
-        self.vars = {}
         self.x = {}
         self.y = {}
         self.l = {}
@@ -28,7 +27,7 @@ class DAGBuilder:
             ops = operators['all']
         self.operators = [o for o in ops if o in operators['all']]
         self.symbols = set(self.variables).union(set(self.operators))
-    
+
     def _reset(self):
         self.labels = None
         self.node_1 = None
@@ -36,96 +35,174 @@ class DAGBuilder:
         self.right_children = None
         self.vars = {}
         self.current_length = 0
+        self.solver.set(unsat_core = True)
 
-    def generate_vars(self, length: int) -> dict[str, Bool]:
+    def generate_vars(self, length: int, positives: Sample, negatives: Sample) -> tuple:
         '''
-        Generates all basic variables to declare for the model.
-        It will generate a combination of all operators for all 
-        integers in the range of the given length.
-        :return: a dict with keys being all DAG variables identifiers, 
-                and values being the z3.Bool() matching the identifier.
+        Generates all variables to declare for the model and store them on this builder instance.
+        :return: a 4-length tuple corresponding to the variables (x_il, l_ij, r_ij, yuv_it).
         '''
-        vars = {}
         for i in range(length):
-            var_i = {f'x_{i}_{symb}': Bool(f'x_{i}_{symb}') for symb in self.symbols}
-            vars.update(var_i)
-        return vars
+            for symb in self.symbols:
+                name = f'x_{i}_{symb}'
+                self.x[(i, symb)] = Bool(name)
+        for i in range(1, length):
+            for j in range(i):
+                self.l[(i, j)] = Bool(f'l_{i}_{j}')
+                self.r[(i, j)] = Bool(f'r_{i}_{j}')
+        for i in range(length):
+            for j, trace in enumerate(positives):
+                for t in range(len(trace)):
+                    self.y[(i, 'p', j, t)] = Bool(f'y_{i}_p_{j}_{t}')
+            for j, trace in enumerate(negatives):
+                for t in range(len(trace)):
+                    self.y[(i, 'n', j, t)] = Bool(f'y_{i}_n_{j}_{t}')
+        return self.x, self.l, self.r, self.y
 
-    def build(self, length: int) -> None:
+    def build(self, length: int, positives: Sample, negatives: Sample) -> Solver:
         '''
         Constructs the full formula that encodes a DAG with the given number of nodes.
         :@param length: The length of the DAG to compute. 
                         This corresponds to the number of node within the DAG.
-        :return: The conjunction of all formulas that encode a different constraint
-                 modeling the DAG of an LTL formula.
-        :@type return: z3.And()
+        :@param positives: The positive words to learn from
+        :@param negatives: The negative words to learn from
+        :return: This builder's instance solver.
         '''
         self._reset()
         self.current_length = length
-        self.vars = self.generate_vars(length)
-        self.labels = self._get_labels(length)
-        self.node_1 = self._get_node_1()
-        if length == 1:
-            return self.solver
+        self.generate_vars(length, positives, negatives)
+        self.add_node_1_constraints()
+        self.add_general_constraints(length)
+        if self.current_length > 1:
+            self._get_left(length)
+            self._get_right(length)
+        self.add_consistency_with(positives)
+        self.add_consistency_with(negatives, positive = False)
 
-        self.l = self._get_left(length)
-        # We don't need to compute right_children formula if there are only 2 nodes in the DAG.
-        if length == 2:
-            return self.solver
-
-        self.r = self._get_right(length)
+        self.solver.assert_and_track(
+            And(*[
+                self.y[(self.current_length - 1, 'p', word_idx, 0)]
+                for word_idx in range(len(positives))
+            ]),
+            f"ensure model models positive samples"
+        )
+        self.solver.assert_and_track(
+            And(*[
+                Not(self.y[(self.current_length - 1, 'n', word_idx, 0)])
+                for word_idx in range(len(negatives))
+            ]),
+            f"ensure model does not model negative samples"
+        )
         return self.solver
+    
+    def add_general_constraints(self, length: int):
+        self.solver.assert_and_track(And(*[
+            AtMost(*[self.x[t] for t in self.x if t[0] == i] + [1])
+            for i in range(length)
+        ]), 'at most one label per node')
+        self.solver.assert_and_track(And(*[
+            AtLeast(*[self.x[t] for t in self.x if t[0] == i] + [1])
+            for i in range(length)
+        ]), 'at least one label per node')
+        if self.current_length > 1:
+            self.solver.assert_and_track(
+                And(*[
+                    And(*[
+                        Or(
+                            Not(self.l[(i, j)]),
+                            Not(self.r[(i, j)])
+                        )
+                        for j in range(i)
+                    ])
+                    for i in range(length)
+                ]),
+                f'nodes cannot have the same child on left and on right'
+            )
+            self.solver.assert_and_track(
+                And(*[
+                    Implies(
+                        Or(*[self.x[(i, a)] for a in self.variables]),
+                        Not(
+                            Or(
+                                Or(*[self.r[t] for t in self.r if t[0] == i]),
+                                Or(*[self.l[t] for t in self.l if t[0] == i])
+                            )
+                        )
+                    )
+                    for i in range(1, length)
+                ]),
+                'variables cannot have children'
+            )
+            self.solver.assert_and_track(
+                And(*[
+                    Or(
+                        AtLeast(*[self.l[(parent, i)] for parent in range(i + 1, length)] + [1]),
+                        AtLeast(*[self.r[(parent, i)] for parent in range(i + 1, length)] + [1])
+                    )
+                    for i in range(length - 1)
+                ]),
+                "ensure that lower variables have at least one parent"
+            )
 
     def _get_left(self, length: int) -> And:
         '''
         Builds the "left children" constraints for the given length.
         '''
-        return self._gen_structure(length, 'L')
+        self.solver.assert_and_track(
+            And(*[
+                Implies(
+                    Or(*[self.x[(i, op)] for op in self.operators]),
+                    AtMost(*[self.l[t] for t in self.l if t[0] == i] + [1])
+                )
+                for i in range(1, length)
+            ]), "at most one left operand per operator"
+        )
+
+        self.solver.assert_and_track(
+            And(*[
+                Implies(
+                    Or(*[self.x[(i, op)] for op in self.operators]),
+                    AtLeast(*[self.l[t] for t in self.l if t[0] == i] + [1])
+                )
+                for i in range(1, length)
+            ]), "at least one left operand per operator"
+        )
 
     def _get_right(self, length: int) -> And:
         '''
         Builds the "right children" constraints for the given length.
         '''
-        return self._gen_structure(length, 'R')
-
-    def _gen_structure(self, length: int, side: str) -> And:
-        '''
-        Generates the variables encoding the DAG structure.
-        Variables will range from 0 to length - 1, and will be 
-        prefixed with the given lowercased side (e.g. 'l_i_j', 'r_i_j').
-        :return: The constraint for the given side in the form of a z3.And object.
-        '''
-        ops = self.operators
-        if side == 'R':
-            ops = [o for o in self.operators if o in operators['binary']]
-        vars = []
-        unique = []
-        for op in ops:
-            labelled_vars = []
-            for i in range(1, length):
-                l_i = []
-                uniq_i = []
-                for j in range(0, i):
-                    name = f'{side.lower()}_{i}_{j}'
-                    l_i_j = Bool(name)
-                    self.vars[name] = l_i_j
-                    l_i.append(l_i_j)
-                    uniq_i.append(And(*[
-                        Or(Not(l_i_j), Not(self.vars[f'{side.lower()}_{i}_{k}'])) 
-                        for k in range(0, j)
-                    ]))
-                children = Or(*l_i)
-                vars.append(children)
-                unique.append(And(*uniq_i))
-                labelled_vars.append(Implies(self.vars[f'x_{i}_{op}'], children))
-        self.solver.assert_and_track(And(And(*vars), And(*unique)), f"nodes on {side}")
-        return And(And(*vars), And(*unique))
-
-    def _create_consistence_variables(self, i: int, word: Trace) -> None:
-        for t in range(len(word)):
-            var_name = f'y_{word.u}_{word.v}_{i}_{t}'
-            self.y[(word.u, word.v, i, t)] = Bool(var_name)
-        return self.y
+        unaries = [o for o in self.operators if o in operators['unary']]
+        binaries = [o for o in self.operators if o in operators['binary']]
+        self.solver.assert_and_track(
+            And(*[
+                Implies(
+                    Or(*[self.x[(i, op)] for op in binaries]),
+                    AtMost(*[self.r[t] for t in self.r if t[0] == i] + [1])
+                )
+                for i in range(1, length)
+            ]), "at most one right operand per binary operator"
+        )
+        self.solver.assert_and_track(
+            And(*[
+                Implies(
+                    Or(*[self.x[(i, op)] for op in binaries]),
+                    AtLeast(*[self.r[t] for t in self.r if t[0] == i] + [1])
+                )
+                for i in range(1, length)
+            ]), "at least one right operand per binary operator"
+        )
+        self.solver.assert_and_track(
+            And(*[
+                Implies(
+                    Or(*[self.x[(i, op)] for op in unaries]),
+                    Not(
+                        Or(*[self.r[t] for t in self.r if t[0] == i])
+                    )
+                )
+                for i in range(1, length)
+            ]), 'unary operators cannot have a right operand'
+        )
 
     def add_consistency_with(self, sample: Sample, positive = True) -> None:
         '''
@@ -133,170 +210,214 @@ class DAGBuilder:
         If positive is set to False, then makes sure the given formula does not satisfy the sample
         by AND-ing it with the negation of y^{u,v}_{n,1}, as stated in the article.
         '''
+        symbol = 'p' if positive else 'n'
         for i in range(self.current_length):
-            for word in sample:
-                self._create_consistence_variables(i, word)
-                self.add_ap_constraints(i, word)
-                if i > 0:
-                    self.add_not_constraints(i, word)
-                    self.add_x_constraints(i, word)
-                if i > 1:
-                    self.add_or_constraints(i, word)
-                    self.add_u_constraints(i, word)
-        if positive:
-            self.solver.assert_and_track(self.y[(word.u, word.v, i, 0)], f"ensure models models positive samples")
-        else:
-            self.solver.assert_and_track(Not(self.y[(word.u, word.v, i, 0)]), f"ensure models does not model positive samples")
+            for j, word in enumerate(sample):
+                self.add_ap_constraints(i, word, j, symbol)
+                if '!' in self.operators:
+                    self.add_not_constraints(i, word, j, symbol)
+                if 'X' in self.operators:
+                    self.add_x_constraints(i, word, j, symbol)
+                if 'G' in self.operators:
+                    self.add_g_constraints(i, word, j, symbol)
+                if 'F' in self.operators:
+                    self.add_f_constraints(i, word, j, symbol)
+                if '|' in self.operators:
+                    self.add_or_constraints(i, word, j, symbol)
+                if '&' in self.operators:
+                    self.add_and_constraints(i, word, j, symbol)
+                if 'U' in self.operators:
+                    self.add_u_constraints(i, word, j, symbol)
+                if '>' in self.operators:
+                    self.add_implication_constraints(i, word, j, symbol)
     
-    def add_ap_constraints(self, i: int, word: Trace) -> And:
-
-        self.solver.assert_and_track(
-            And(
-                *[Implies(
-                    self.vars[f'x_{i}_{a}'],
-                    And(*[
-                        self.y[(word.u, word.v, i, t)] if a in word
-                        else Not(self.y[(word.u, word.v, i, t)]) 
-                        for t in range(len(word))
-                    ])
-                ) for a in self.variables]
-            ), f"atoms semantics for node {i} on word {word.u} {word.v}"
-        )
-    
-    def _get_children_of(self, i: int):
-        return (
-            [(k, v) for k, v in self.vars.items() if k.startswith(f'l_{i}_')],
-            [(k, v) for k, v in self.vars.items() if k.startswith(f'r_{i}_')]
-        )
-
-    def add_or_constraints(self, i: int, word: Trace) -> And:
-        self.solver.assert_and_track(
-            And(*[
-                Implies(
-                    And(self.vars[f'x_{i}_v'], self.vars[f'l_{i}_{j}'], self.vars[f'r_{i}_{jp}']),
-                    And(*[
-                        self.y[(word.u, word.v, i, t)] == Or(
-                            self.y[(word.u, word.v, j, t)],
-                            self.y[(word.u, word.v, jp, t)]
-                        )
-                    for t in range(len(word))])
-                )
-                for j in range(i) for jp in range(i)
-            ]),
-            f"or semantics for node {i} on word {word.u} {word.v}"
-        )
-
-
-    def add_not_constraints(self, i: int, word: Trace) -> And:
-
-        self.solver.assert_and_track(
-            And(*[
-                Implies(
-                    And(self.vars[f'x_{i}_!'], self.vars[f'l_{i}_{j}']),
-                    And(*[
-                        self.y[(word.u, word.v, i, t)] == Not(self.y[(word.u, word.v, j, t)])
-                    for t in range(len(word))])
-                )
-            for j in range(i)]), f"not semantics for node {i} on word {word.u} {word.v}")
-
-    def add_x_constraints(self, i: int, word: Trace) -> And:
-        self.solver.assert_and_track(
-            And(*[
-                Implies(
-                    And(self.vars[f'x_{i}_X'], self.vars[f'l_{i}_{j}']),
-                    And(
+    def add_ap_constraints(self, i: int, word: Trace, word_idx: int, symbol: str) -> None:
+        for a in self.variables:
+            self.solver.assert_and_track(
+                    Implies(
+                        self.x[(i, a)],
                         And(*[
-                            self.y[(word.u, word.v, i, t)] == self.y[(word.u, word.v, j, t + 1)]
-                            for t in range(len(word) - 1)
-                        ]),
-                        self.y[(word.u, word.v, i, len(word) - 1)] == self.y[(word.u, word.v, j, word._repeat)]
-                    )
-                )
-            for j in range(i)])
-        , f"next semantics for node {i} on word {word.u} {word.v}")
+                            self.y[(i, symbol, word_idx, t)] if a in word[t] else Not(self.y[(i, symbol, word_idx, t)])
+                            for t in range(len(word))
+                        ])
+                    ),
+                f"atom {a} semantics for node {i} on {symbol} word number {word_idx}"
+            )
 
-
-    def add_u_constraints(self, i: int, word: Trace) -> And:
+    def add_not_constraints(self, i: int, word: Trace, word_idx: int, symbol: str) -> None:
         self.solver.assert_and_track(
-            And(*[
-                Implies(
-                    And(self.vars[f'x_{i}_U'], self.vars[f'l_{i}_{j}'], self.vars[f'r_{i}_{jp}']),
-                    And(
+            Implies(
+                self.x[(i, '!')],
+                And(*[
+                    Implies(
+                        And(self.x[(i, '!')], self.l[(i, j)]),
                         And(*[
-                            self.y[(word.u, word.v, i, t)] == Or(*[
-                                And(
-                                    self.y[(word.u, word.v, jp, tp)],
-                                    And(*[
-                                        self.y[(word.u, word.v, j, tpp)]
-                                        for tpp in range(t, tp)
-                                    ])
-                                )
-                                for tp in range(t, len(word))
-                            ])
-                            for t in range(word._repeat)
-                        ]),
-                        And(*[
-                            self.y[(word.u, word.v, i, t)] == Or(*[
-                                And(
-                                    self.y[(word.u, word.v, jp, tp)],
-                                    And(*[
-                                        self.y[(word.u, word.v, j, tpp)]
-                                        for tpp in self._generate_aux_set(word, t, tp)
-                                    ])
-                                )
-                                for tp in range(word._repeat, len(word))
-                            ])
-                            for t in range(word._repeat, len(word))
+                            self.y[(i, symbol, word_idx, t)] == Not(
+                                self.y[(j, symbol, word_idx, t)]
+                            )
+                            for t in range(len(word))
                         ])
                     )
-                )
-                for j in range(i) for jp in range(i) if j != jp
-            ]),
-            f"until semantics for node {i} on word {word.u} {word.v}"
+                    for j in range(i)
+                ])
+            ),
+            f"not semantics for node {i} on {symbol} word number {word_idx}"
         )
 
-    def _generate_aux_set(self, word: Trace, start: int, end: int):
-        if start < end:
-            return range(start, end)
-        if end <= word._repeat:
-            return []
-        l = [i for i in range(word._repeat, end - 1)]
-        r = [i for i in range(start, len(word))]
-        return l + r
+    def add_x_constraints(self, i: int, word: Trace, word_idx: int, symbol: str) -> None:
+        self.solver.assert_and_track(
+            Implies(
+                self.x[(i, 'X')],
+                And(*[
+                    Implies(
+                        And(self.x[(i, 'X')], self.l[(i, j)]),
+                        And(*[
+                            self.y[(i, symbol, word_idx, t)] == self.y[(j, symbol, word_idx, word.next_index(t))]
+                            for t in range(len(word))
+                        ])
+                    )
+                    for j in range(i)
+                ])
+            ),
+            f"next semantics for node {i} on {symbol} word number {word_idx}"
+        )
+    
+    def add_g_constraints(self, i: int, word: Trace, word_idx: int, symbol: str) -> None:
+        self.solver.assert_and_track(
+            Implies(
+                self.x[(i, 'G')],
+                And(*[
+                    Implies(
+                        And(self.x[(i, 'G')], self.l[(i, j)]),
+                        And(*[
+                            self.y[(i, symbol, word_idx, t)] == And(*[
+                                self.y[(j, symbol, word_idx, tp)]
+                                for tp in word.generate_aux_set(t)
+                            ])
+                            for t in range(len(word))
+                        ])
+                    )
+                    for j in range(i)
+                ])
+            ),
+            f'semantics of the globally operator on {symbol} word {word_idx} for node {i}'
+        )
 
-    def _get_labels(self, length: int) -> And:
+    def add_f_constraints(self, i: int, word: Trace, word_idx: int, symbol: str) -> None:
+        self.solver.assert_and_track(
+            Implies(
+                self.x[(i, 'F')],
+                And(*[
+                    Implies(
+                        And(self.x[(i, 'F')], self.l[(i, j)]),
+                        And(*[
+                            self.y[(i, symbol, word_idx, t)] == Or(*[
+                                self.y[(j, symbol, word_idx, tp)]
+                                for tp in word.generate_aux_set(t)
+                            ])
+                            for t in range(len(word))
+                        ])
+                    )
+                    for j in range(i)
+                ])
+            ),
+            f'semantics of the finally operator on {symbol} word {word_idx} for node {i}'
+        )
+    
+    def add_or_constraints(self, i: int, word: Trace, word_idx: int, symbol: str) -> None:
+        self.solver.assert_and_track(
+            Implies(
+                self.x[(i, '|')],
+                And(*[
+                    Implies(
+                        And(self.x[(i, '|')], self.l[(i, j)], self.r[(i, jp)]),
+                        And(*[
+                            self.y[(i, symbol, word_idx, t)] == Or(*[
+                                self.y[(j, symbol, word_idx, t)],
+                                self.y[(jp, symbol, word_idx, t)]
+                            ])
+                            for t in range(len(word))
+                        ])
+                    )
+                    for j in range(i) for jp in range(i)
+                ])
+            ),
+            f"or semantics for node {i} on {symbol} word number {word_idx}"
+        )
+    
+    def add_and_constraints(self, i: int, word: Trace, word_idx: int, symbol: str) -> None:
+        self.solver.assert_and_track(
+            Implies(
+                self.x[(i, '&')],
+                And(*[
+                    Implies(
+                        And(self.x[(i, '&')], self.l[(i, j)], self.r[(i, jp)]),
+                        And(*[
+                            self.y[(i, symbol, word_idx, t)] == And(*[
+                                self.y[(j, symbol, word_idx, t)],
+                                self.y[(jp, symbol, word_idx, t)]
+                            ])
+                            for t in range(len(word))
+                        ])
+                    )
+                    for j in range(i) for jp in range(i)
+                ])
+            ),
+            f"and semantics for node {i} on {symbol} word number {word_idx}"
+        )
+    
+    def add_implication_constraints(self, i: int, word: Trace, word_idx: int, symbol: str) -> None:
+        self.solver.assert_and_track(
+            Implies(
+                self.x[(i, '>')],
+                And([
+                    Implies(
+                        And(self.x[(i, '>')], self.l[(i, j)], self.r[(i, jp)]),
+                        And([
+                            self.y[(i, symbol, word_idx, t)] == Implies(
+                                self.y[(j, symbol, word_idx, t)],
+                                self.y[(jp, symbol, word_idx, t)]
+                            )
+                            for t in range(len(word))
+                        ])
+                    )
+                    for j in range(i) for jp in range(i)
+                ])
+            ),
+            f'implies semantics for node {i} on {symbol} word {word_idx}'
+        )
+
+    def add_u_constraints(self, i: int, word: Trace, word_idx: int, symbol: str) -> None:
+        self.solver.assert_and_track(
+            Implies(
+                self.x[(i, 'U')],
+                And(*[
+                    Implies(
+                        And(self.x[(i, 'U')], self.l[(i, j)], self.r[(i, jp)]),
+                        And(*[
+                            self.y[(i, symbol, word_idx, t)] == Or(*[
+                                And(
+                                    [self.y[(j, symbol, word_idx, tp)] for tp in word.generate_aux_set(t)[0:tpp]] +
+                                    [self.y[(jp, symbol, word_idx, word.generate_aux_set(t)[tpp])]]
+                                )
+                                for tpp in range(len(word.generate_aux_set(t)))
+                            ])
+                            for t in range(len(word))
+                        ])
+                    )
+                    for j in range(i) for jp in range(i)
+                ])
+            ),
+            f"until semantics for node {i} on {symbol} word number {word_idx}"
+        )
+
+    def add_node_1_constraints(self) -> None:
         '''
-        Computes the formulas to force nodes to have one (and only one) label.
-        Label is contained in the union between the sets representing the variables
-        given and the allowed operators for the considered LTL.
-
-        :return: an object with two children constraints: 
-                 one that encodes the fact that node i must have a label assigned, 
-                 and the other that ensures that node i only has a single label assigned.
-        :@type return: z3.And(z3.And(z3.Or(z3.Not, z3.Not)), z3.And(z3.Or))
-        '''
-        names = []
-        for i in range(length):
-            node_i = Or(*[self.vars[f'x_{i}_{symb}'] for symb in self.symbols])
-            names.append(node_i)
-
-        nodes = []
-        for i in range(length):
-            node_i = []
-            for label in self.symbols:
-                not_label_i = Not(self.vars[f'x_{i}_{label}'])
-                not_other_labels_i = [Not(self.vars[f'x_{i}_{symb}']) for symb in set(self.symbols) - set([label])]
-                node_i.append(And(*[Or(not_label_i, other_label) for other_label in not_other_labels_i]))
-            nodes.append(And(*node_i))
-        self.solver.assert_and_track(And(And(*names), And(*nodes)), "each node has only one label")
-
-    def _get_node_1(self) -> Or:
-        '''
-        Returns the formula encoding the node at index 1 of the DAG.
+        Adds the formula encoding the node at index 1 of the DAG.
         That node needs to be labeled with an atomic proposition, 
         i.e. one of the variables given in the .json file containing the traces
-
-        :return: the formula encoding the constraint that node 1 must be an atomic proposition.
-        :@type return: z3.Or
         '''
-        self.solver.assert_and_track(Or(*[self.vars[f'x_0_{var}'] for var in self.variables]), "node 1 must be an atom")
+        self.solver.assert_and_track(
+            Or([self.x[(0, a)] for a in self.variables]),
+            "node 1 must be an atom"
+        )
