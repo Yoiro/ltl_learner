@@ -28,6 +28,22 @@ class Trace(UserList):
                 return False
         return True
 
+    def next_index(self, index: int) -> int:
+        if index == len(self.data) - 1:
+            return self._repeat
+        return index + 1
+
+    def generate_aux_set(self, start: int) -> list:
+        aux_set = []
+        current = start
+        visited = []
+        while current not in visited:
+            aux_set.append(current)
+            visited.append(current)
+            current = self.next_index(current)
+        visited.append(current)
+        return visited
+
 
 class Sample(UserList):
     '''
@@ -55,3 +71,4 @@ class Sample(UserList):
             if not trace.satisfies(phi):
                 return False
         return True
+
