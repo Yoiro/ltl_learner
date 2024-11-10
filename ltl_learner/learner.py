@@ -19,7 +19,7 @@ class Learner:
         self.root_folder = Path(Path(__file__) / '..').resolve()
         self.file_name = f'run_{datetime.now().strftime("%Y%m%d_%H%M%S")}.smtlib2'
         self.cutoff = k
-        self.variables, self.positive, self.negative = self.read_sample(sample)
+        self.variables, self.positive, self.negative, self.expected_formula = self.read_sample(sample)
         ops = {}
         if syntax:
             ops = syntax
@@ -35,9 +35,10 @@ class Learner:
         return (
             spec['variables'],
             Sample(spec['positives']),
-            Sample(spec['negatives'])
+            Sample(spec['negatives']),
+            spec.get('expected', '')
         )
-    
+
     def is_sat(self):
         self.solver.check()
         return self.solver.model()
@@ -69,7 +70,7 @@ class Learner:
             logger.info("Found a valid truth assignation.")
             self.write_model()
             logger.info('Now computing the matching LTL formula.')
-            return self.converter.build(length = n)
+            return self.converter.build(length = n), self.expected_formula
         else:
             logger.info("Unable to determine a formula within the given constraint.")
             return self.solver
